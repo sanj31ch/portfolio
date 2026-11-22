@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex"><title>Admin | Portfolio</title>
+<link rel="stylesheet" href="../css/style.css">
+<style>
+.shell{display:grid;grid-template-columns:220px 1fr;min-height:100vh}.side{border-right:1px solid var(--line);padding:20px;background:var(--surface)}
+.side button{display:block;width:100%;text-align:left;margin:0 0 6px;background:none;border:0;padding:8px 10px;border-radius:var(--r);font:inherit;color:var(--text);cursor:pointer}
+.side button.on{background:var(--accent);color:var(--accent-ink)}.main{padding:28px;max-width:860px}
+.row{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}.row small{color:var(--muted)}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.login{max-width:360px;margin:12vh auto;padding:0 20px}
+#toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--accent);color:var(--accent-ink);padding:8px 16px;border-radius:var(--r);display:none}
+@media(max-width:760px){.shell{grid-template-columns:1fr}.side{border:0;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:4px}.side button{width:auto}}
+</style></head>
+<body>
+<div id="login" class="login"><h1>Admin sign in</h1>
+  <form id="loginForm"><label>Email<input name="email" type="email" required autocomplete="username"></label>
+  <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
+  <button class="btn primary">Sign in</button><p id="loginMsg" class="err" role="alert"></p></form></div>
+<div id="app" class="shell" hidden>
+  <aside class="side"><strong>Portfolio admin</strong><div id="tabs" style="margin-top:14px"></div>
+    <button data-t="_messages">Messages</button><button id="out">Sign out</button></aside>
+  <div class="main"><div class="bar">
+    <button class="btn" id="previewBtn">Preview changes</button><button class="btn primary" id="publishBtn">Publish changes</button>
+    <button class="btn" id="seedBtn">Import starter content</button></div>
+    <div id="pane"></div></div></div>
+<div id="toast" role="status"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="../js/config.js"></script><script src="../js/schema.js"></script><script src="../js/defaults.js"></script>
+<script>
+const $=s=>document.querySelector(s), esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const C=window.CONFIG; if(!C.SUPABASE_URL){document.body.innerHTML="<p style='padding:24px'>Supabase isn't configured. Fill in js/config.js (see README).</p>";throw 0}
+const sb=supabase.createClient(C.SUPABASE_URL,C.SUPABASE_ANON_KEY); let tab="profile";
+const toast=m=>{const t=$("#toast");t.textContent=m;t.style.display="block";setTimeout(()=>t.style.display="none",2500)};
+const title=d=>d.title||d.name||d.category&&`${d.category}: ${d.name}`||"(untitled)";
+
+async function start(){
+  const {data:{session}}=await sb.auth.getSession(); if(!session)return;
+  const {data:a}=await sb.from("admins").select("user_id").maybeSingle();
+  if(!a){await sb.auth.signOut();$("#loginMsg").textContent="This account is not an admin. See README step 4.";return}
+  $("#login").hidden=true;$("#app").hidden=false;
+  $("#tabs").innerHTML=Object.entries(SCHEMA).map(([k,v])=>`<button data-t="${k}">${esc(v.label)}</button>`).join("");
+  show("profile");
+}
+document.addEventListener("click",e=>{const t=e.target.dataset?.t;if(t)show(t)});
+$("#loginForm").onsubmit=async e=>{e.preventDefault();const f=Object.fromEntries(new FormData(e.target));
+  const {error}=await sb.auth.signInWithPassword(f);$("#loginMsg").textContent=error?"Sign in failed. Check your email and password.":"";if(!error)start()};
+$("#out").onclick=async()=>{await sb.auth.signOut();location.reload()};
+$("#previewBtn").onclick=()=>open("../index.html?preview=1","_blank");
+$("#publishBtn").onclick=async()=>{if(!confirm("Publish all saved changes to the public site?"))return;
+  const {error}=await sb.rpc("publish_all");toast(error?"Publish failed: "+error.message:"Published");show(tab)};
+$("#seedBtn").onclick=async()=>{if(!confirm("Add the starter content as drafts? Do this only once."))return;
+  const rows=[];let n=0;for(const [s,list] of Object.entries(DEFAULTS))for(const d of list)rows.push({section:s,data:d,sort:n++});
+  const {error}=await sb.from("items").insert(rows);toast(error?error.message:"Imported. Preview, then publish.");show(tab)};
+
+async function show(t){tab=t;document.querySelectorAll("[data-t]").forEach(b=>b.classList.toggle("on",b.dataset.t===t));
+  if(t==="_messages"){const {data}=await sb.from("messages").select("*").order("created_at",{ascending:false});
+    $("#pane").innerHTML="<h2>Messages</h2>"+((data||[]).map(m=>`<div class="row"><div><strong>${esc(m.name)}</strong> <small>${esc(m.email)} · ${new Date(m.created_at).toLocaleString()}</small><p>${esc(m.message)}</p></div><button class="btn" onclick="delMsg('${m.id}')">Delete</button></div>`).join("")||"<p>No messages yet.</p>");return}
+  const S=SCHEMA[t];const {data}=await sb.from("items").select("*").eq("section",t).eq("deleted",false).order("sort").order("created_at");
+  const rows=(data||[]).map(r=>`<div class="row"><div>${esc(title(r.data))} <small>${r.data._hidden?"Hidden · ":""}${JSON.stringify(r.live)===JSON.stringify(r.data)?"Published":"Unpublished changes"}</small></div>
+    <div><button class="btn" onclick='edit(${JSON.stringify(r.id)})'>Edit</button> <button class="btn" onclick='del(${JSON.stringify(r.id)})'>Delete</button></div></div>`).join("");
+  $("#pane").innerHTML=`<h2>${esc(S.label)}</h2>${rows||"<p class='muted'>Nothing here yet.</p>"}${S.single&&data?.length?"":`<div class="bar"><button class="btn primary" onclick="edit()">Add new</button></div>`}`}
+
+async function edit(id){const S=SCHEMA[tab];let d={},sort=0;
+  if(id){const {data}=await sb.from("items").select("*").eq("id",id).single();d=data.data;sort=data.sort}
+  const f=S.fields.map(([k,l,type,opt])=>{const v=d[k]??"";
+    if(type==="textarea")return `<label>${l}<textarea name="${k}" rows="4">${esc(v)}</textarea></label>`;
+    if(type==="select")return `<label>${l}<select name="${k}">${opt.map(o=>`<option ${o===v?"selected":""}>${o}</option>`).join("")}</select></label>`;
+    if(type==="file")return `<label>${l}<input type="file" name="${k}__file" accept="${opt}"><input name="${k}" value="${esc(v)}" placeholder="File URL (filled after upload)"></label>`;
+    return `<label>${l}<input name="${k}" value="${esc(v)}"></label>`}).join("");
+  $("#pane").innerHTML=`<h2>${id?"Edit":"Add"} ${esc(S.label)}</h2><form id="ef">${f}
+    <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="_hidden" ${d._hidden?"checked":""}> Hide from public site</label>
+    <label>Order (lower shows first)<input type="number" name="_sort" value="${sort}"></label>
+    <div class="bar"><button class="btn primary">Save</button><button type="button" class="btn" onclick="show(tab)">Cancel</button></div></form>`;
+  $("#ef").onsubmit=async e=>{e.preventDefault();const fd=new FormData(e.target),out={};
+    for(const [k,,type] of S.fields){if(type==="file"){const file=fd.get(k+"__file");
+      if(file&&file.size){if(file.size>10*1048576){toast("File is over 10 MB");return}
+        const path=`${tab}/${Date.now()}-${file.name.replace(/[^\w.-]/g,"_")}`;
+        const {error}=await sb.storage.from("media").upload(path,file);if(error){toast("Upload failed: "+error.message);return}
+        out[k]=sb.storage.from("media").getPublicUrl(path).data.publicUrl}else out[k]=fd.get(k)}else out[k]=fd.get(k)}
+    if(fd.get("_hidden"))out._hidden=true;const row={section:tab,data:out,sort:+fd.get("_sort")||0};
+    const {error}=id?await sb.from("items").update({data:out,sort:row.sort}).eq("id",id):await sb.from("items").insert(row);
+    toast(error?error.message:"Saved. Publish to make it live.");if(!error)show(tab)}}
+async function del(id){if(!confirm("Delete this item? It leaves the public site when you publish."))return;
+  const {error}=await sb.from("items").update({deleted:true}).eq("id",id);toast(error?error.message:"Deleted (publish to apply)");show(tab)}
+async function delMsg(id){await sb.from("messages").delete().eq("id",id);show("_messages")}
+start();
+</script></body></html>
